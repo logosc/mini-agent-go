@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -147,5 +149,54 @@ func TestGeminiProviderTextResponse(t *testing.T) {
 	}
 	if result.Usage.OutputTokens != 3 {
 		t.Errorf("output tokens = %d, want 3", result.Usage.OutputTokens)
+	}
+}
+
+func TestGeminiProviderAudioMessage(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		resp := geminiResponse{
+			Candidates: []geminiCandidate{{
+				Content: geminiContent{
+					Role:  "model",
+					Parts: []geminiPart{{Text: "ok"}},
+				},
+				FinishReason: "STOP",
+			}},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := NewGeminiProvider(GeminiOptions{
+		APIKey:  "test",
+		Model:   "gemini-test",
+		BaseURL: srv.URL,
+	})
+
+	audio := []byte{0x52, 0x49, 0x46, 0x46} // "RIFF"
+	msgs := []Message{
+		{Role: "user", Content: "here is audio", AudioData: audio, AudioMediaType: "audio/wav"},
+	}
+	_, err := p.Chat(context.Background(), msgs, nil)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(capturedBody, &req); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	// Navigate: contents[0].parts[1].inlineData.mimeType
+	contents := req["contents"].([]any)
+	parts := contents[0].(map[string]any)["parts"].([]any)
+	if len(parts) < 2 {
+		t.Fatalf("expected at least 2 parts (text + audio), got %d", len(parts))
+	}
+	inlineData := parts[1].(map[string]any)["inlineData"].(map[string]any)
+	if mime := inlineData["mimeType"].(string); !strings.HasPrefix(mime, "audio/") {
+		t.Errorf("mimeType = %q, want audio/*", mime)
 	}
 }

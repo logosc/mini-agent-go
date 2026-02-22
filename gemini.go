@@ -374,6 +374,18 @@ func (p *GeminiProvider) buildRequest(messages []Message, tools []ToolDef) (*gem
 					},
 				})
 			}
+			if len(msg.AudioData) > 0 {
+				mimeType := msg.AudioMediaType
+				if mimeType == "" {
+					mimeType = "audio/wav"
+				}
+				parts = append(parts, geminiPart{
+					InlineData: &geminiInlineData{
+						MimeType: mimeType,
+						Data:     base64.StdEncoding.EncodeToString(msg.AudioData),
+					},
+				})
+			}
 			req.Contents = append(req.Contents, geminiContent{
 				Role:  "user",
 				Parts: parts,
