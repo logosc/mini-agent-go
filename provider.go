@@ -16,9 +16,10 @@ type Message struct {
 
 // ToolCall represents a tool invocation requested by the LLM.
 type ToolCall struct {
-	ID   string          `json:"id"`
-	Name string          `json:"name"`
-	Args json.RawMessage `json:"arguments"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	Args             json.RawMessage `json:"arguments"`
+	ThoughtSignature string          `json:"thought_signature,omitempty"`
 }
 
 // ToolDef describes a tool available to the LLM.
