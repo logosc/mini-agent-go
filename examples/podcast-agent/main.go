@@ -90,7 +90,11 @@ func (t *FetchContentTool) Execute(ctx context.Context, state *PodcastState, arg
 		}
 		state.SourceURL = p.URL
 		state.Title = article.Title
-		state.SourceText = truncateText(article.TextContent, 50000)
+		text := strings.TrimSpace(article.TextContent)
+		if len(text) < 50 {
+			return agent.ToolResult{}.WithError(fmt.Sprintf("URL fetched but content too short (%d chars) — the site may block scraping. Ask the user to paste the article text instead.", len(text))), nil
+		}
+		state.SourceText = truncateText(text, 50000)
 	} else if p.Text != "" {
 		state.Title = "User-provided content"
 		state.SourceText = truncateText(p.Text, 50000)
@@ -515,17 +519,23 @@ func truncateText(s string, maxLen int) string {
 const systemPrompt = `You are a podcast producer agent. You turn articles, blog posts, and web content into engaging two-host podcast episodes.
 
 Your workflow:
-1. Ask the user for a URL or topic
-2. Use fetch_content to get the source material
+1. Ask the user for a URL or text to turn into a podcast
+2. Use fetch_content to get the source material — pass the URL in the "url" parameter, OR if the user pasted text directly, pass it in the "text" parameter
 3. Use generate_script to create a two-host conversational script
 4. Use generate_audio to produce the final MP3
+
+IMPORTANT: Sometimes the source text is pre-loaded into state automatically (e.g. when the user pastes a long article). When you see a message like "source text is already loaded", skip fetch_content and call generate_script directly. The text is in state even though you can't see it.
 
 Keep your messages concise. Always use the tools — don't write podcast scripts yourself.`
 
 func main() {
 	model := flag.String("model", "claude-sonnet-4-6", "LLM model")
 	port := flag.String("port", ":8080", "debug console port")
-	googleKey := flag.String("google-key", os.Getenv("GOOGLE_API_KEY"), "Google API key for Gemini TTS")
+	defaultTTSKey := os.Getenv("GOOGLE_API_KEY")
+	if defaultTTSKey == "" {
+		defaultTTSKey = os.Getenv("GEMINI_API_KEY")
+	}
+	googleKey := flag.String("google-key", defaultTTSKey, "Google API key for Gemini TTS")
 	flag.Parse()
 
 	factory := func(cfg debug.SessionConfig) (*agent.Engine[*PodcastState], *PodcastState) {
@@ -548,6 +558,17 @@ func main() {
 	console := debug.NewConsoleUserFactory(factory, "user", *model)
 	console.Title = "Podcast Agent"
 	console.ReplyAggregateWindow = 2 * time.Second
+	console.OnTextInput = func(state *PodcastState, text string) string {
+		if len(text) > 500 && state.SourceText == "" {
+			state.SourceText = truncateText(text, 50000)
+			state.Title = "User-provided content"
+			// Count words for a rough summary
+			words := len(strings.Fields(text))
+			log.Printf("[podcast] long text input intercepted (%d chars, ~%d words) → stored in state", len(text), words)
+			return fmt.Sprintf("[System: the user pasted a %d-word article which has been pre-loaded into state. Source text is ready. Call generate_script now to create the podcast script.]", words)
+		}
+		return text
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()

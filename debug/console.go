@@ -80,6 +80,13 @@ type Console[S any] struct {
 	// ContextFunc, if set, is called at the start of each new session.
 	ContextFunc func(state S) string
 
+	// OnTextInput, if set, is called before user text is sent to the engine.
+	// It can modify state and return a replacement text for the LLM.
+	// Use this to intercept long pasted content, store it in state, and
+	// return a short summary so the LLM context stays small.
+	// If nil, text is passed through unchanged.
+	OnTextInput func(state S, text string) string
+
 	engine *agent.Engine[S]
 	state  S
 
@@ -477,16 +484,20 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 		c.emit("state", map[string]any{"running": true})
 
 		go func() {
+			taskText := body.Text
+			if c.OnTextInput != nil {
+				taskText = c.OnTextInput(c.state, taskText)
+			}
 			var err error
 			if len(audioBytes) > 0 {
 				// Include audio in the very first LLM call, not via pre-queue.
 				err = c.engine.RunWithReply(context.Background(), c.state, agent.Reply{
-					Text:           body.Text,
+					Text:           taskText,
 					AudioData:      audioBytes,
 					AudioMediaType: body.AudioMediaType,
 				})
 			} else {
-				err = c.engine.Run(context.Background(), c.state, body.Text)
+				err = c.engine.Run(context.Background(), c.state, taskText)
 			}
 			c.mu.Lock()
 			c.running = false
@@ -521,11 +532,15 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		} else {
-			reply := agent.Reply{Text: body.Text}
+			replyText := body.Text
+			if c.OnTextInput != nil {
+				replyText = c.OnTextInput(c.state, replyText)
+			}
+			reply := agent.Reply{Text: replyText}
 			select {
 			case c.chat.ReplyCh <- reply:
 			default:
-				c.chat.BufferMessage(body.Text)
+				c.chat.BufferMessage(replyText)
 			}
 		}
 	}
