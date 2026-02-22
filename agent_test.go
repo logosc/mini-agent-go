@@ -3,6 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -635,4 +639,129 @@ type mockToolWithParams struct {
 func (t *mockToolWithParams) Parameters() json.RawMessage { return t.params }
 func (t *mockToolWithParams) Execute(ctx context.Context, state *testState, args json.RawMessage) (*ToolResult, error) {
 	return t.mockTool.Execute(ctx, state, args)
+}
+
+// TestEngineGeminiAudioToolCall is a full-stack integration test that exercises:
+//  1. An audio Reply sent into the engine results in a Gemini streaming request
+//     containing an inlineData part with mimeType starting with "audio/".
+//  2. The agent correctly executes a tool call returned by the mock Gemini server
+//     in response to the audio input.
+//
+// Flow:
+//
+//	Request 1 (initial text "process audio"):
+//	  Gemini returns plain text "ready" → idleTurns=1 → engine waits for user reply.
+//	  The pre-loaded audio reply is consumed immediately.
+//
+//	Request 2 (contains audio inlineData):
+//	  Mock server verifies inlineData with audio/* mimeType is present.
+//	  Gemini returns a tool call for "audio_tool" → engine executes audio_tool → idleTurns=0.
+//
+//	Request 3 (after tool execution):
+//	  Gemini returns plain text "done" → idleTurns=1 → engine calls WaitForReply.
+//	  No more replies are queued; context (500 ms) cancels → WaitForReply returns error →
+//	  engine.Run returns nil (clean exit).
+func TestEngineGeminiAudioToolCall(t *testing.T) {
+	var (
+		capturedAudioPart bool
+		callCount         int
+	)
+
+	// SSE snippets used by the mock server.
+	readySSE := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ready\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}]}\n\n"
+	toolCallSSE := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"audio_tool\",\"args\":{}}}],\"role\":\"model\"},\"finishReason\":\"STOP\"}]}\n\n"
+	doneSSE := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"done\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}]}\n\n"
+
+	// scanForAudio checks whether the Gemini request body contains an inlineData
+	// part whose mimeType starts with "audio/".
+	scanForAudio := func(body []byte) bool {
+		var req map[string]any
+		if err := json.Unmarshal(body, &req); err != nil {
+			return false
+		}
+		contents, _ := req["contents"].([]any)
+		for _, c := range contents {
+			cm, _ := c.(map[string]any)
+			parts, _ := cm["parts"].([]any)
+			for _, p := range parts {
+				pm, _ := p.(map[string]any)
+				if id, ok := pm["inlineData"].(map[string]any); ok {
+					if mime, _ := id["mimeType"].(string); strings.HasPrefix(mime, "audio/") {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+
+		body, _ := io.ReadAll(r.Body)
+
+		switch callCount {
+		case 1:
+			// Initial request — return text so the engine waits for a user reply.
+			fmt.Fprint(w, readySSE)
+		case 2:
+			// Request containing the user's audio — verify inlineData, return tool call.
+			if scanForAudio(body) {
+				capturedAudioPart = true
+			}
+			fmt.Fprint(w, toolCallSSE)
+		default:
+			// After tool execution — return text; engine will block on WaitForReply
+			// until the context is cancelled (clean exit).
+			fmt.Fprint(w, doneSSE)
+		}
+	}))
+	defer srv.Close()
+
+	// GeminiProvider pointing at the test server.
+	provider := NewGeminiProvider(GeminiOptions{
+		APIKey:  "test-key",
+		Model:   "gemini-test",
+		BaseURL: srv.URL,
+	})
+
+	// Tool that records calls.
+	tool := &mockTool{name: "audio_tool", result: &ToolResult{Summary: "audio processed"}}
+
+	// ChannelChat — pre-load an audio reply so the engine receives it immediately
+	// after the first "ready" response (request 1).
+	audio := []byte{0x52, 0x49, 0x46, 0x46} // "RIFF" header bytes
+	replyCh := make(chan Reply, 1)
+	chat := &ChannelChat{
+		SendFunc: func(ctx context.Context, text string) error { return nil },
+		ReplyCh:  replyCh,
+	}
+	replyCh <- Reply{AudioData: audio, AudioMediaType: "audio/wav"}
+
+	engine := &Engine[*testState]{
+		LLM:             provider,
+		Tools:           []Tool[*testState]{tool},
+		Chat:            chat,
+		SystemPrompt:    "You are a test agent.",
+		MaxIterations:   10,
+		IdleTurnsToExit: 2, // needs two idle turns; after request 3 the context cancels cleanly
+	}
+
+	// 500 ms is enough for three fast httptest round-trips; the engine blocks on
+	// WaitForReply after request 3 and exits cleanly when the context is cancelled.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err := engine.Run(ctx, &testState{}, "process audio")
+	if err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+
+	if !capturedAudioPart {
+		t.Error("Gemini request did not contain an inlineData part with audio/* mimeType")
+	}
+	if tool.calls != 1 {
+		t.Errorf("audio_tool called %d times, want 1", tool.calls)
+	}
 }
