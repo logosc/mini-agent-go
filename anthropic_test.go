@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -163,5 +164,19 @@ func TestAnthropicMergesConsecutiveUserMessages(t *testing.T) {
 	// The merged message should have 3 content blocks.
 	if len(receivedBody.Messages[0].Content) != 3 {
 		t.Errorf("Content blocks = %d, want 3", len(receivedBody.Messages[0].Content))
+	}
+}
+
+func TestAnthropicProviderRejectsAudio(t *testing.T) {
+	p := NewAnthropicProvider(AnthropicOptions{APIKey: "test", Model: "claude-3-5-sonnet-20241022"})
+	msgs := []Message{
+		{Role: "user", Content: "here", AudioData: []byte{0x00}, AudioMediaType: "audio/wav"},
+	}
+	_, err := p.Chat(context.Background(), msgs, nil)
+	if err == nil {
+		t.Fatal("expected error for audio input on Anthropic provider")
+	}
+	if !strings.Contains(err.Error(), "audio") {
+		t.Errorf("error %q should mention 'audio'", err)
 	}
 }
