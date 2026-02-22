@@ -149,7 +149,7 @@ export function ChatPanel({
           <div className="bubble assistant">{streamBuffer}</div>
         )}
       </div>
-      <ChatInput onSend={onSend} />
+      <ChatInput onSend={onSend} showMic={/gemini-3/i.test(pendingModel || defaultModel)} />
     </div>
   );
 }
