@@ -114,26 +114,47 @@ body {
   cursor: not-allowed;
 }
 
-.header-model-select {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 2px 6px;
-  border-radius: 4px;
+.header-model-input {
+  width: 180px !important;
+}
+
+/* Settings bar (API key + base URL) */
+.settings-bar {
+  display: flex;
+  align-items: center;
+  padding: 4px 16px;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.settings-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-key-input {
+  width: 160px !important;
+  letter-spacing: 1px;
+}
+
+.remember-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 11px;
-  font-family: monospace;
-  width: 120px;
-  outline: none;
+  color: var(--dim);
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.header-model-select:focus {
-  border-color: var(--accent);
-}
-
-.header-model-select:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.settings-url-input {
+  flex: 1 !important;
+  width: auto !important;
 }
 
 /* Chat */

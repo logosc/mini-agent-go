@@ -258,17 +258,20 @@ func (p *GeminiProvider) StreamChat(ctx context.Context, messages []Message, too
 	// Allow large lines (Gemini can send big chunks).
 	scanner.Buffer(make([]byte, 0, 256*1024), 256*1024)
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
+	// SSE events can span multiple "data:" lines. Accumulate them and
+	// process the complete payload when we hit an empty line (event boundary).
+	var dataBuf strings.Builder
+	flushSSE := func() {
+		if dataBuf.Len() == 0 {
+			return
 		}
-		data := strings.TrimPrefix(line, "data: ")
+		data := dataBuf.String()
+		dataBuf.Reset()
 
 		var chunk geminiResponse
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			log.Printf("[gemini-stream] skip unparseable chunk: %v", err)
-			continue
+			return
 		}
 
 		// Usage metadata typically arrives in the final chunk.
@@ -280,7 +283,7 @@ func (p *GeminiProvider) StreamChat(ctx context.Context, messages []Message, too
 		}
 
 		if len(chunk.Candidates) == 0 {
-			continue
+			return
 		}
 		for _, part := range chunk.Candidates[0].Content.Parts {
 			if part.Text != "" {
@@ -298,6 +301,21 @@ func (p *GeminiProvider) StreamChat(ctx context.Context, messages []Message, too
 			}
 		}
 	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			if dataBuf.Len() > 0 {
+				dataBuf.WriteByte('\n')
+			}
+			dataBuf.WriteString(strings.TrimPrefix(line, "data: "))
+		} else if line == "" {
+			// Empty line = end of SSE event.
+			flushSSE()
+		}
+	}
+	// Flush any trailing event without a final blank line.
+	flushSSE()
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("gemini: read stream: %w", err)
 	}

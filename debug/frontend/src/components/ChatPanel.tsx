@@ -3,12 +3,14 @@ import { ChatMessage as ChatMessageType } from "../state/types";
 import { ChatMessage } from "./ChatMessage";
 import { ChatInput, SendPayload } from "./ChatInput";
 
-// Well-known model options shown in the dropdown.
-const MODEL_OPTIONS = [
-  { value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-  { value: "claude-opus-4-6",   label: "Opus 4.6" },
-  { value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
-  { value: "gemini",            label: "Gemini" },
+// Well-known model suggestions shown in the datalist.
+// Users can also type any model ID manually.
+const MODEL_SUGGESTIONS = [
+  "claude-sonnet-4-6",
+  "claude-opus-4-6",
+  "gpt-5.2-chat-latest",
+  "gemini-3.1-pro-preview",
+  "gemini-3-flash-preview",
 ];
 
 interface Props {
@@ -22,6 +24,12 @@ interface Props {
   pendingModel: string;
   onModelChange: (model: string) => void;
   defaultModel: string;
+  pendingApiKey: string;
+  onApiKeyChange: (key: string) => void;
+  rememberApiKey: boolean;
+  onRememberApiKeyChange: (remember: boolean) => void;
+  pendingBaseUrl: string;
+  onBaseUrlChange: (url: string) => void;
 }
 
 export function ChatPanel({
@@ -35,6 +43,12 @@ export function ChatPanel({
   pendingModel,
   onModelChange,
   defaultModel,
+  pendingApiKey,
+  onApiKeyChange,
+  rememberApiKey,
+  onRememberApiKeyChange,
+  pendingBaseUrl,
+  onBaseUrlChange,
 }: Props) {
   const chatRef = useRef<HTMLDivElement>(null);
 
@@ -53,9 +67,8 @@ export function ChatPanel({
     return "Ready";
   }
 
-  // User can only change the ID between sessions (not while agent is running
-  // or after the first message of the current session).
-  const sessionActive = running || messages.length > 0;
+  // Settings are only locked while the agent is actively running.
+  const sessionActive = running;
 
   return (
     <div className="left">
@@ -75,21 +88,54 @@ export function ChatPanel({
         </div>
         <div className="header-user">
           <span className="header-user-label">model:</span>
-          <select
-            className="header-model-select"
+          <input
+            className="header-user-input header-model-input"
+            list="model-suggestions"
             value={pendingModel || defaultModel}
             onChange={(e) => onModelChange(e.target.value)}
             disabled={sessionActive}
+            placeholder="model id"
             title={sessionActive ? "Start a new session to change the model" : "Model for the next session"}
-          >
-            {MODEL_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
+          />
+          <datalist id="model-suggestions">
+            {MODEL_SUGGESTIONS.map((m) => (
+              <option key={m} value={m} />
             ))}
-            {/* If current value isn't in the list, show it as a custom option */}
-            {(pendingModel || defaultModel) && !MODEL_OPTIONS.find((o) => o.value === (pendingModel || defaultModel)) && (
-              <option value={pendingModel || defaultModel}>{pendingModel || defaultModel}</option>
-            )}
-          </select>
+          </datalist>
+        </div>
+      </div>
+      <div className="settings-bar">
+        <div className="settings-field">
+          <span className="header-user-label">key:</span>
+          <input
+            className="header-user-input settings-key-input"
+            type="password"
+            value={pendingApiKey}
+            onChange={(e) => onApiKeyChange(e.target.value)}
+            disabled={sessionActive}
+            placeholder="API key"
+            autoComplete="off"
+            title={sessionActive ? "Start a new session to change the API key" : "API key (not saved unless 'remember' is checked)"}
+          />
+          <label className="remember-label" title="Persist API key in localStorage">
+            <input
+              type="checkbox"
+              checked={rememberApiKey}
+              onChange={(e) => onRememberApiKeyChange(e.target.checked)}
+            />
+            remember
+          </label>
+        </div>
+        <div className="settings-field">
+          <span className="header-user-label">url:</span>
+          <input
+            className="header-user-input settings-url-input"
+            value={pendingBaseUrl}
+            onChange={(e) => onBaseUrlChange(e.target.value)}
+            disabled={sessionActive}
+            placeholder="base URL (optional)"
+            title={sessionActive ? "Start a new session to change the base URL" : "Custom base URL (saved in browser)"}
+          />
         </div>
       </div>
       <div className="messages" ref={chatRef}>

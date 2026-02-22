@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
+	"time"
 )
 
 // Reply holds the user's response.
@@ -43,6 +45,11 @@ type ChannelChat struct {
 	AttachmentFunc func(ctx context.Context, att Attachment) error
 	ReplyCh        chan Reply
 
+	// ReplyAggregateWindow, if > 0, causes WaitForReply to wait this long
+	// after each incoming message for additional messages before returning.
+	// Multiple texts are joined with "\n"; last image wins. Default: 0 (off).
+	ReplyAggregateWindow time.Duration
+
 	mu       sync.Mutex
 	messages []BufferedMessage
 }
@@ -62,11 +69,41 @@ func (c *ChannelChat) SendAttachment(ctx context.Context, att Attachment) error 
 }
 
 func (c *ChannelChat) WaitForReply(ctx context.Context) (Reply, error) {
+	// Wait for the first message.
+	var first Reply
 	select {
-	case msg := <-c.ReplyCh:
-		return msg, nil
+	case first = <-c.ReplyCh:
 	case <-ctx.Done():
 		return Reply{}, ctx.Err()
+	}
+
+	window := c.ReplyAggregateWindow
+	if window <= 0 {
+		return first, nil
+	}
+
+	// Aggregate additional messages within the window.
+	texts := []string{first.Text}
+	imageData := first.ImageData
+	timer := time.NewTimer(window)
+	defer timer.Stop()
+	for {
+		select {
+		case msg := <-c.ReplyCh:
+			texts = append(texts, msg.Text)
+			if len(msg.ImageData) > 0 {
+				imageData = msg.ImageData // last image wins
+			}
+			timer.Reset(window)
+		case <-timer.C:
+			combined := strings.Join(texts, "\n")
+			if len(texts) > 1 {
+				log.Printf("[agent-chat] aggregated %d replies within %v window", len(texts), window)
+			}
+			return Reply{Text: combined, ImageData: imageData}, nil
+		case <-ctx.Done():
+			return Reply{}, ctx.Err()
+		}
 	}
 }
 

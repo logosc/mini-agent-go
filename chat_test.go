@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestNullChatSendDoesNotBlock(t *testing.T) {
@@ -103,5 +104,49 @@ func TestChannelChatDrainMessagesEmpty(t *testing.T) {
 	chat := &ChannelChat{ReplyCh: make(chan Reply)}
 	if got := chat.DrainMessages(); got != nil {
 		t.Errorf("DrainMessages() on empty = %v, want nil", got)
+	}
+}
+
+func TestWaitForReplyAggregation(t *testing.T) {
+	ch := make(chan Reply, 5)
+	chat := &ChannelChat{
+		ReplyCh:              ch,
+		ReplyAggregateWindow: 2 * time.Second,
+	}
+
+	// Send 3 messages in rapid succession.
+	ch <- Reply{Text: "hello"}
+	ch <- Reply{Text: "world"}
+	ch <- Reply{Text: "!", ImageData: []byte("img")}
+
+	reply, err := chat.WaitForReply(context.Background())
+	if err != nil {
+		t.Fatalf("WaitForReply: %v", err)
+	}
+	if reply.Text != "hello\nworld\n!" {
+		t.Errorf("reply.Text = %q, want %q", reply.Text, "hello\nworld\n!")
+	}
+	if string(reply.ImageData) != "img" {
+		t.Errorf("reply.ImageData = %q, want %q", reply.ImageData, "img")
+	}
+}
+
+func TestWaitForReplyNoWindow(t *testing.T) {
+	ch := make(chan Reply, 5)
+	chat := &ChannelChat{
+		ReplyCh: ch,
+		// ReplyAggregateWindow defaults to 0 — no aggregation.
+	}
+
+	ch <- Reply{Text: "first"}
+	ch <- Reply{Text: "second"}
+
+	reply, err := chat.WaitForReply(context.Background())
+	if err != nil {
+		t.Fatalf("WaitForReply: %v", err)
+	}
+	// Should return only the first message.
+	if reply.Text != "first" {
+		t.Errorf("reply.Text = %q, want %q", reply.Text, "first")
 	}
 }

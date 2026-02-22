@@ -21,18 +21,27 @@ import (
 //go:embed frontend/dist
 var consoleHTML embed.FS
 
+// SessionConfig holds the per-session settings editable in the browser UI.
+// All fields are passed to the user factory at session start.
+type SessionConfig struct {
+	UserID  string `json:"user_id"`
+	Model   string `json:"model"`
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+}
+
 // Console wraps an Engine[S] with debug instrumentation and serves a web UI.
 //
 // Create with NewConsole for a fixed engine, NewConsoleFactory to get a fresh
 // engine+state per session, or NewConsoleUserFactory to also support switching
-// the user ID from the browser UI.
+// settings from the browser UI.
 type Console[S any] struct {
 	// factory is called at the start of each new session (no user ID).
 	factory func() (*agent.Engine[S], S)
 
-	// userFactory is called at the start of each new session with the user ID
-	// and model chosen in the browser UI. Takes precedence over factory.
-	userFactory func(userID, model string) (*agent.Engine[S], S)
+	// userFactory is called at the start of each new session with the
+	// settings chosen in the browser UI. Takes precedence over factory.
+	userFactory func(cfg SessionConfig) (*agent.Engine[S], S)
 
 	// defaultUser is the user ID shown in the browser on first load.
 	defaultUser string
@@ -46,6 +55,11 @@ type Console[S any] struct {
 
 	// OnImage, if set, is called whenever the user sends an image.
 	OnImage func(state S, imageData []byte, caption string)
+
+	// ReplyAggregateWindow, if > 0, causes WaitForReply to coalesce
+	// multiple rapid user messages within this duration into a single reply.
+	// Default: 0 (disabled).
+	ReplyAggregateWindow time.Duration
 
 	// ContextFunc, if set, is called at the start of each new session.
 	ContextFunc func(state S) string
@@ -87,14 +101,17 @@ func NewConsoleFactory[S any](factory func() (*agent.Engine[S], S)) *Console[S] 
 	return c
 }
 
-// NewConsoleUserFactory creates a debug console that calls factory(userID, model)
-// at the start of each new session. Both the user ID and model are editable in
-// the browser UI. defaultUser and defaultModel are pre-filled on first load.
+// NewConsoleUserFactory creates a debug console that calls factory(cfg) at the
+// start of each new session. The user ID, model, API key, and base URL are all
+// editable in the browser UI and persisted in localStorage. defaultUser and
+// defaultModel are pre-filled on first load.
 //
 // Example:
 //
-//	debug.NewConsoleUserFactory(myAgent.NewDebugSession, "debug", "claude-sonnet-4-6")
-func NewConsoleUserFactory[S any](factory func(userID, model string) (*agent.Engine[S], S), defaultUser, defaultModel string) *Console[S] {
+//	debug.NewConsoleUserFactory(func(cfg debug.SessionConfig) (*agent.Engine[*S], *S) {
+//	    // use cfg.Model, cfg.APIKey, cfg.BaseURL to create provider
+//	}, "debug", "claude-sonnet-4-6")
+func NewConsoleUserFactory[S any](factory func(cfg SessionConfig) (*agent.Engine[S], S), defaultUser, defaultModel string) *Console[S] {
 	c := &Console[S]{
 		userFactory:  factory,
 		defaultUser:  defaultUser,
@@ -135,7 +152,8 @@ func (c *Console[S]) instrument(engine *agent.Engine[S]) {
 			c.emit("chat", ev)
 			return nil
 		},
-		ReplyCh: make(chan agent.Reply, 1),
+		ReplyCh:              make(chan agent.Reply, 1),
+		ReplyAggregateWindow: c.ReplyAggregateWindow,
 	}
 	engine.Chat = c.chat
 
@@ -226,24 +244,29 @@ func ServeFactory[S any](ctx context.Context, factory func() (*agent.Engine[S], 
 }
 
 // ServeUserFactory is a one-line launcher for a user-and-model-aware console.
-// The factory receives the user ID and model chosen in the browser UI on each
-// new session.
+// The factory receives the SessionConfig chosen in the browser UI on each new
+// session.
 //
 // Example:
 //
-//	debug.ServeUserFactory(ctx, myAgent.NewDebugSession, "debug", "claude-sonnet-4-6", ":9742")
-func ServeUserFactory[S any](ctx context.Context, factory func(userID, model string) (*agent.Engine[S], S), defaultUser, defaultModel, addr string) error {
+//	debug.ServeUserFactory(ctx, myFactory, "debug", "claude-sonnet-4-6", ":9742")
+func ServeUserFactory[S any](ctx context.Context, factory func(cfg SessionConfig) (*agent.Engine[S], S), defaultUser, defaultModel, addr string) error {
 	return serve(ctx, NewConsoleUserFactory(factory, defaultUser, defaultModel), addr)
 }
 
-func serve[S any](ctx context.Context, console *Console[S], addr string) error {
-	srv := &http.Server{Addr: addr, Handler: console.Handler()}
+// Serve starts the HTTP server for this console and blocks until ctx is done.
+func (c *Console[S]) Serve(ctx context.Context, addr string) error {
+	srv := &http.Server{Addr: addr, Handler: c.Handler()}
 	go func() {
 		<-ctx.Done()
 		srv.Close()
 	}()
 	log.Printf("[debug] console at http://localhost%s", addr)
 	return srv.ListenAndServe()
+}
+
+func serve[S any](ctx context.Context, console *Console[S], addr string) error {
+	return console.Serve(ctx, addr)
 }
 
 func (c *Console[S]) emit(eventType string, data any) {
@@ -319,6 +342,8 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 		ImageMediaType string `json:"image_media_type"` // e.g. "image/png"
 		UserID         string `json:"user_id"`          // override user for new sessions
 		Model          string `json:"model"`            // override model for new sessions
+		APIKey         string `json:"api_key"`          // API key for new sessions
+		BaseURL        string `json:"base_url"`         // custom base URL for new sessions
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad request", 400)
@@ -333,6 +358,7 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid image_data base64", 400)
 			return
 		}
+		log.Printf("[debug] received image (%d bytes, mime=%s) with text=%q", len(imageBytes), body.ImageMediaType, body.Text)
 	}
 
 	c.mu.Lock()
@@ -359,7 +385,12 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 
 		// Spin up a fresh engine+state for each new session.
 		if c.userFactory != nil {
-			engine, state := c.userFactory(userID, model)
+			engine, state := c.userFactory(SessionConfig{
+				UserID:  userID,
+				Model:   model,
+				APIKey:  body.APIKey,
+				BaseURL: body.BaseURL,
+			})
 			c.engine = engine
 			c.state = state
 			c.totalInput = 0
@@ -410,15 +441,13 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 		}()
 	} else {
 		c.emit("chat", userEv)
-		reply := agent.Reply{Text: body.Text, ImageData: imageBytes}
+		// Image data is handled by OnImage above; only text goes through
+		// the reply channel so photos have a single ingestion path.
+		reply := agent.Reply{Text: body.Text}
 		select {
 		case c.chat.ReplyCh <- reply:
 		default:
-			if len(imageBytes) > 0 {
-				c.chat.BufferMessageWithImage(body.Text, imageBytes)
-			} else {
-				c.chat.BufferMessage(body.Text)
-			}
+			c.chat.BufferMessage(body.Text)
 		}
 	}
 
