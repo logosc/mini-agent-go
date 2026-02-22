@@ -56,6 +56,17 @@ type Console[S any] struct {
 	// OnImage, if set, is called whenever the user sends an image.
 	OnImage func(state S, imageData []byte, caption string)
 
+	// OnAudio, if set, is called whenever the user sends an audio message.
+	// audio is the raw bytes; mimeType is e.g. "audio/wav"; caption is any
+	// accompanying text.
+	OnAudio func(state S, audio []byte, mimeType, caption string)
+
+	// TranscribeFunc, if set, is called instead of routing audio directly
+	// through ReplyCh. The returned text is sent as a normal text Reply.
+	// Use this to add STT (speech-to-text) before the agent sees the message.
+	// If nil, audio is routed as Reply.AudioData (Path B — native Gemini).
+	TranscribeFunc func(ctx context.Context, audio []byte, mimeType string) (string, error)
+
 	// ReplyAggregateWindow, if > 0, causes WaitForReply to coalesce
 	// multiple rapid user messages within this duration into a single reply.
 	// Default: 0 (disabled).
@@ -340,6 +351,8 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 		Text           string `json:"text"`
 		ImageData      string `json:"image_data"`       // base64-encoded
 		ImageMediaType string `json:"image_media_type"` // e.g. "image/png"
+		AudioData      string `json:"audio_data"`       // base64-encoded
+		AudioMediaType string `json:"audio_media_type"` // e.g. "audio/wav"
 		UserID         string `json:"user_id"`          // override user for new sessions
 		Model          string `json:"model"`            // override model for new sessions
 		APIKey         string `json:"api_key"`          // API key for new sessions
@@ -359,6 +372,17 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("[debug] received image (%d bytes, mime=%s) with text=%q", len(imageBytes), body.ImageMediaType, body.Text)
+	}
+
+	var audioBytes []byte
+	if body.AudioData != "" {
+		var err error
+		audioBytes, err = base64.StdEncoding.DecodeString(body.AudioData)
+		if err != nil {
+			http.Error(w, "invalid audio_data base64", 400)
+			return
+		}
+		log.Printf("[debug] received audio (%d bytes, mime=%s) with text=%q", len(audioBytes), body.AudioMediaType, body.Text)
 	}
 
 	c.mu.Lock()
@@ -414,6 +438,9 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 	if len(imageBytes) > 0 && c.OnImage != nil && c.engine != nil {
 		c.OnImage(c.state, imageBytes, body.Text)
 	}
+	if len(audioBytes) > 0 && c.OnAudio != nil && c.engine != nil {
+		c.OnAudio(c.state, audioBytes, body.AudioMediaType, body.Text)
+	}
 	c.mu.Unlock()
 
 	// Always echo the user message as a chat event so it is stored in the
@@ -422,6 +449,10 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 	if len(imageBytes) > 0 {
 		userEv["image_data"] = base64.StdEncoding.EncodeToString(imageBytes)
 		userEv["image_media_type"] = imageMIME(imageBytes, "")
+	}
+	if len(audioBytes) > 0 {
+		userEv["audio_data"] = base64.StdEncoding.EncodeToString(audioBytes)
+		userEv["audio_media_type"] = body.AudioMediaType
 	}
 
 	if stopped {
@@ -441,13 +472,35 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 		}()
 	} else {
 		c.emit("chat", userEv)
-		// Image data is handled by OnImage above; only text goes through
-		// the reply channel so photos have a single ingestion path.
-		reply := agent.Reply{Text: body.Text}
-		select {
-		case c.chat.ReplyCh <- reply:
-		default:
-			c.chat.BufferMessage(body.Text)
+		if len(audioBytes) > 0 {
+			if c.TranscribeFunc != nil {
+				text, err := c.TranscribeFunc(r.Context(), audioBytes, body.AudioMediaType)
+				if err != nil {
+					log.Printf("[debug] TranscribeFunc error: %v", err)
+					text = body.Text // fallback to caption
+				}
+				reply := agent.Reply{Text: text}
+				select {
+				case c.chat.ReplyCh <- reply:
+				default:
+					c.chat.BufferMessage(text)
+				}
+			} else {
+				// Path B: native audio — route bytes directly.
+				reply := agent.Reply{Text: body.Text, AudioData: audioBytes, AudioMediaType: body.AudioMediaType}
+				select {
+				case c.chat.ReplyCh <- reply:
+				default:
+					c.chat.BufferMessageWithAudio(body.Text, audioBytes, body.AudioMediaType)
+				}
+			}
+		} else {
+			reply := agent.Reply{Text: body.Text}
+			select {
+			case c.chat.ReplyCh <- reply:
+			default:
+				c.chat.BufferMessage(body.Text)
+			}
 		}
 	}
 
