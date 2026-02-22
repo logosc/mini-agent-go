@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -27,6 +28,21 @@ type Engine[S any] struct {
 	OnToolDone func(state S, name string, result *ToolResult)
 	// OnUsage is called with token usage after each LLM response.
 	OnUsage func(usage Usage)
+	// IdleTurnsToExit is the number of consecutive no-tool responses before
+	// the agent considers the conversation done. Default: 2.
+	IdleTurnsToExit int
+	// CompactThreshold is the fraction of MaxIterations at which conversation
+	// compaction triggers (0.0–1.0). Default: 0.75.
+	CompactThreshold float64
+	// CompactKeepRecent is the number of recent messages to preserve during
+	// compaction. Default: 6.
+	CompactKeepRecent int
+	// LazyTools are tools sent to the LLM with only name and description
+	// (no parameter schema). When the LLM first calls a lazy tool, the full
+	// parameter schema is returned as a tool result and the tool is promoted.
+	// On the next call, it executes normally. The tool list itself never
+	// changes, preserving KV cache hit rates.
+	LazyTools []Tool[S]
 }
 
 // Run starts the agent loop.
@@ -39,9 +55,21 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 	if maxIter <= 0 {
 		maxIter = 20
 	}
+	idleTurnsToExit := e.IdleTurnsToExit
+	if idleTurnsToExit <= 0 {
+		idleTurnsToExit = 2
+	}
+	compactThreshold := e.CompactThreshold
+	if compactThreshold <= 0 {
+		compactThreshold = 0.75
+	}
+	compactKeepRecent := e.CompactKeepRecent
+	if compactKeepRecent <= 0 {
+		compactKeepRecent = 6
+	}
 
-	toolMap := make(map[string]Tool[S], len(e.Tools))
-	toolDefs := make([]ToolDef, 0, len(e.Tools))
+	toolMap := make(map[string]Tool[S], len(e.Tools)+len(e.LazyTools))
+	toolDefs := make([]ToolDef, 0, len(e.Tools)+len(e.LazyTools))
 	for _, t := range e.Tools {
 		toolMap[t.Name()] = t
 		toolDefs = append(toolDefs, ToolDef{
@@ -50,6 +78,17 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 			Parameters:  t.Parameters(),
 		})
 	}
+	lazySet := make(map[string]bool, len(e.LazyTools))
+	for _, t := range e.LazyTools {
+		toolMap[t.Name()] = t
+		lazySet[t.Name()] = true
+		toolDefs = append(toolDefs, ToolDef{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  json.RawMessage(`{"type":"object"}`),
+		})
+	}
+	promotedSet := make(map[string]bool)
 
 	messages := []Message{
 		{Role: "system", Content: e.SystemPrompt},
@@ -61,7 +100,7 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 	maxCompactions := 2
 
 	for i := 0; i < maxIter; i++ {
-		if i >= maxIter*3/4 && compactions < maxCompactions {
+		if i >= int(float64(maxIter)*compactThreshold) && compactions < maxCompactions {
 			compacted, err := e.compactMessages(ctx, messages)
 			if err != nil {
 				log.Printf("[agent] compaction failed: %v", err)
@@ -92,7 +131,7 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 			}
 
 			idleTurns++
-			if idleTurns >= 2 {
+			if idleTurns >= idleTurnsToExit {
 				return nil
 			}
 
@@ -134,6 +173,18 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 					Role:       "tool",
 					ToolCallID: tc.ID,
 					Content:    fmt.Sprintf("unknown tool: %s", tc.Name),
+				})
+				continue
+			}
+
+			// Lazy tool promotion: return full schema on first call, execute on second.
+			if lazySet[tc.Name] && !promotedSet[tc.Name] {
+				promotedSet[tc.Name] = true
+				log.Printf("[agent] promoting lazy tool: %s", tc.Name)
+				messages = append(messages, Message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    fmt.Sprintf("Tool parameters: %s\nRe-call with proper arguments.", string(tool.Parameters())),
 				})
 				continue
 			}
@@ -194,7 +245,10 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 }
 
 func (e *Engine[S]) compactMessages(ctx context.Context, messages []Message) ([]Message, error) {
-	const keepRecent = 6
+	keepRecent := e.CompactKeepRecent
+	if keepRecent <= 0 {
+		keepRecent = 6
+	}
 	if len(messages) <= keepRecent+2 {
 		return messages, nil
 	}

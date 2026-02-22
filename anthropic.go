@@ -69,12 +69,12 @@ func NewAnthropicProvider(opts AnthropicOptions) *AnthropicProvider {
 // ---------- Anthropic request types ----------
 
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system,omitempty"`
-	Messages  []anthropicMessage `json:"messages"`
-	Tools     []anthropicTool    `json:"tools,omitempty"`
-	Stream    bool               `json:"stream,omitempty"`
+	Model     string                `json:"model"`
+	MaxTokens int                   `json:"max_tokens"`
+	System    anthropicMsgContent   `json:"system,omitempty"`
+	Messages  []anthropicMessage    `json:"messages"`
+	Tools     []anthropicTool       `json:"tools,omitempty"`
+	Stream    bool                  `json:"stream,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -103,6 +103,13 @@ type anthropicContentBlock struct {
 	// type: "tool_result"
 	ToolUseID string              `json:"tool_use_id,omitempty"`
 	Content   anthropicMsgContent `json:"content,omitempty"`
+
+	// prompt caching
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+}
+
+type anthropicCacheControl struct {
+	Type string `json:"type"` // "ephemeral"
 }
 
 type anthropicImageSource struct {
@@ -112,9 +119,10 @@ type anthropicImageSource struct {
 }
 
 type anthropicTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string                `json:"name"`
+	Description  string                `json:"description"`
+	InputSchema  json.RawMessage       `json:"input_schema"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 // ---------- Anthropic response types ----------
@@ -395,6 +403,7 @@ func (p *AnthropicProvider) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", p.apiKey)
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
+	req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 }
 
 func (p *AnthropicProvider) buildRequest(messages []Message, tools []ToolDef, stream bool) (*anthropicRequest, error) {
@@ -406,14 +415,20 @@ func (p *AnthropicProvider) buildRequest(messages []Message, tools []ToolDef, st
 
 	var apiMsgs []anthropicMessage
 
+	ephemeral := &anthropicCacheControl{Type: "ephemeral"}
+
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
+			text := msg.Content
 			if p.systemHint != "" {
-				req.System = p.systemHint + "\n\n" + msg.Content
-			} else {
-				req.System = msg.Content
+				text = p.systemHint + "\n\n" + text
 			}
+			req.System = anthropicMsgContent{{
+				Type:         "text",
+				Text:         text,
+				CacheControl: ephemeral,
+			}}
 
 		case "user":
 			var blocks []anthropicContentBlock
@@ -489,6 +504,8 @@ func (p *AnthropicProvider) buildRequest(messages []Message, tools []ToolDef, st
 				InputSchema: t.Parameters,
 			})
 		}
+		// Mark the last tool for prompt caching so all tools + system are cached.
+		req.Tools[len(req.Tools)-1].CacheControl = ephemeral
 	}
 
 	return req, nil

@@ -326,3 +326,74 @@ func TestEngineExpectationMessages(t *testing.T) {
 		t.Errorf("expectation message not sent. sent = %v", sentMessages)
 	}
 }
+
+func TestEngineLazyToolPromotion(t *testing.T) {
+	lazyTool := &mockTool{
+		name:   "rare_tool",
+		result: &ToolResult{Summary: "executed"},
+	}
+	// Give it a detailed schema so we can verify it's returned on promotion.
+	lazyToolWithSchema := &mockToolWithParams{
+		mockTool: lazyTool,
+		params:   json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`),
+	}
+
+	var toolResultMessages []string
+	llm := &mockLLM{
+		responses: []Response{
+			// Turn 1: LLM calls the lazy tool (will be promoted, not executed).
+			{ToolCalls: []ToolCall{{ID: "tc1", Name: "rare_tool", Args: json.RawMessage(`{}`)}}},
+			// Turn 2: LLM re-calls with proper args (now promoted, will execute).
+			{ToolCalls: []ToolCall{{ID: "tc2", Name: "rare_tool", Args: json.RawMessage(`{"query":"test"}`)}}},
+			// Turn 3: Done.
+			{Content: "All done."},
+		},
+		onChat: func(msgs []Message) {
+			// Capture tool result messages.
+			for _, m := range msgs {
+				if m.Role == "tool" {
+					toolResultMessages = append(toolResultMessages, m.Content)
+				}
+			}
+		},
+	}
+
+	engine := &Engine[*testState]{
+		LLM:           llm,
+		LazyTools:     []Tool[*testState]{lazyToolWithSchema},
+		SystemPrompt:  "test",
+		MaxIterations: 10,
+	}
+
+	err := engine.Run(context.Background(), &testState{}, "test")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Tool should only have been executed once (second call, after promotion).
+	if lazyTool.calls != 1 {
+		t.Errorf("lazy tool executed %d times, want 1", lazyTool.calls)
+	}
+
+	// First tool result should contain the parameter schema.
+	foundSchema := false
+	for _, msg := range toolResultMessages {
+		if strings.Contains(msg, `"query"`) && strings.Contains(msg, "Re-call") {
+			foundSchema = true
+		}
+	}
+	if !foundSchema {
+		t.Errorf("promotion message with schema not found in tool results: %v", toolResultMessages)
+	}
+}
+
+// mockToolWithParams wraps mockTool to return custom Parameters.
+type mockToolWithParams struct {
+	*mockTool
+	params json.RawMessage
+}
+
+func (t *mockToolWithParams) Parameters() json.RawMessage { return t.params }
+func (t *mockToolWithParams) Execute(ctx context.Context, state *testState, args json.RawMessage) (*ToolResult, error) {
+	return t.mockTool.Execute(ctx, state, args)
+}

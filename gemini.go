@@ -42,7 +42,7 @@ func NewGeminiProvider(opts GeminiOptions) *GeminiProvider {
 	}
 	model := opts.Model
 	if model == "" {
-		model = "gemini-2.0-flash"
+		model = "gemini-3-flash-preview"
 	}
 	return &GeminiProvider{
 		apiKey:  opts.APIKey,
