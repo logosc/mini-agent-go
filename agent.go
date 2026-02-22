@@ -47,6 +47,36 @@ type Engine[S any] struct {
 
 // Run starts the agent loop.
 func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
+	return e.run(ctx, state, Message{Role: "user", Content: taskPrompt})
+}
+
+// RunWithReply starts the agent loop using reply as the initial user turn,
+// so audio or image data is included in the very first LLM call.
+func (e *Engine[S]) RunWithReply(ctx context.Context, state S, reply Reply) error {
+	userContent := reply.Text
+	if len(reply.AudioData) > 0 {
+		if reply.Text != "" {
+			userContent = fmt.Sprintf("[Voice message received with caption: %q]", reply.Text)
+		} else {
+			userContent = "[Voice message received]"
+		}
+	} else if len(reply.ImageData) > 0 {
+		if reply.Text != "" {
+			userContent = fmt.Sprintf("[Photo received with caption: %q]", reply.Text)
+		} else {
+			userContent = "[Photo received]"
+		}
+	}
+	return e.run(ctx, state, Message{
+		Role:           "user",
+		Content:        userContent,
+		AudioData:      reply.AudioData,
+		AudioMediaType: reply.AudioMediaType,
+		ImageData:      reply.ImageData,
+	})
+}
+
+func (e *Engine[S]) run(ctx context.Context, state S, initialUserMsg Message) error {
 	chat := e.Chat
 	if chat == nil {
 		chat = NullChat{}
@@ -92,7 +122,7 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 
 	messages := []Message{
 		{Role: "system", Content: e.SystemPrompt},
-		{Role: "user", Content: taskPrompt},
+		initialUserMsg,
 	}
 
 	idleTurns := 0
