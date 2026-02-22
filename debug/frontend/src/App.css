@@ -325,6 +325,24 @@ body {
   height: 36px;
 }
 
+.bubble-file {
+  margin-bottom: 6px;
+}
+
+.bubble-file-name {
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 4px;
+}
+
+.bubble-video {
+  display: block;
+  max-width: 100%;
+  max-height: 300px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+
 /* Right panel sections */
 .section {
   margin-bottom: 20px;
