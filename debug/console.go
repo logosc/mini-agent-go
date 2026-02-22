@@ -48,6 +48,10 @@ type Console[S any] struct {
 	// currentUser is the user ID used for the current/last session.
 	currentUser string
 
+	// Title is the display name shown in the browser header.
+	// If empty, defaults to "Agent Debug Console".
+	Title string
+
 	// defaultModel is the model shown in the browser on first load.
 	defaultModel string
 	// currentModel is the model used for the current/last session.
@@ -157,6 +161,15 @@ func (c *Console[S]) instrument(engine *agent.Engine[S]) {
 			if att.Type == "image" && len(att.Data) > 0 {
 				ev["image_data"] = base64.StdEncoding.EncodeToString(att.Data)
 				ev["image_media_type"] = imageMIME(att.Data, att.Name)
+			} else if att.Type == "file" && len(att.Data) > 0 {
+				mime := fileMIME(att.Data, att.Name)
+				if strings.HasPrefix(mime, "audio/") || strings.HasPrefix(mime, "video/") {
+					ev["file_data"] = base64.StdEncoding.EncodeToString(att.Data)
+					ev["file_mime"] = mime
+					ev["file_name"] = att.Name
+				} else {
+					ev["text"] = fmt.Sprintf("[attachment: %s]", att.Name)
+				}
 			} else {
 				ev["text"] = fmt.Sprintf("[attachment: %s]", att.Name)
 			}
@@ -306,6 +319,7 @@ func (c *Console[S]) emitConfig() {
 		})
 	}
 	c.emit("config", map[string]any{
+		"title":          c.Title,
 		"system_prompt":  c.engine.SystemPrompt,
 		"tools":          tools,
 		"max_iterations": c.engine.MaxIterations,
@@ -460,8 +474,19 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 		c.emitConfig()
 		c.emit("chat", userEv)
 		c.emit("state", map[string]any{"running": true})
+
 		go func() {
-			err := c.engine.Run(context.Background(), c.state, body.Text)
+			var err error
+			if len(audioBytes) > 0 {
+				// Include audio in the very first LLM call, not via pre-queue.
+				err = c.engine.RunWithReply(context.Background(), c.state, agent.Reply{
+					Text:           body.Text,
+					AudioData:      audioBytes,
+					AudioMediaType: body.AudioMediaType,
+				})
+			} else {
+				err = c.engine.Run(context.Background(), c.state, body.Text)
+			}
 			c.mu.Lock()
 			c.running = false
 			c.mu.Unlock()
@@ -506,6 +531,53 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "sent"})
+}
+
+// fileMIME detects the MIME type of audio/video files from magic bytes or filename.
+func fileMIME(data []byte, name string) string {
+	// MP3: ID3 tag or MPEG sync word
+	if len(data) >= 3 && string(data[:3]) == "ID3" {
+		return "audio/mpeg"
+	}
+	if len(data) >= 2 && data[0] == 0xFF && (data[1]&0xE0) == 0xE0 {
+		return "audio/mpeg"
+	}
+	// OGG
+	if len(data) >= 4 && string(data[:4]) == "OggS" {
+		return "audio/ogg"
+	}
+	// WAV (RIFF....WAVE)
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WAVE" {
+		return "audio/wav"
+	}
+	// MP4/M4A/MOV (ftyp box)
+	if len(data) >= 8 && string(data[4:8]) == "ftyp" {
+		return "video/mp4"
+	}
+	// WebM (EBML header — Matroska/WebM)
+	if len(data) >= 4 && data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3 {
+		return "video/webm"
+	}
+	// Fall back to extension
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		switch strings.ToLower(name[i+1:]) {
+		case "mp3":
+			return "audio/mpeg"
+		case "wav":
+			return "audio/wav"
+		case "ogg":
+			return "audio/ogg"
+		case "m4a", "aac":
+			return "audio/mp4"
+		case "mp4", "m4v":
+			return "video/mp4"
+		case "webm":
+			return "video/webm"
+		case "mov":
+			return "video/quicktime"
+		}
+	}
+	return "application/octet-stream"
 }
 
 // imageMIME detects the MIME type from magic bytes, falling back to the filename.

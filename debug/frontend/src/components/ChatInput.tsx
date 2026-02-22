@@ -18,6 +18,7 @@ export function ChatInput({ onSend }: Props) {
   const [imageData, setImageData] = useState<string | null>(null);
   const [imageMediaType, setImageMediaType] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
+  const [sendingAudio, setSendingAudio] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -50,6 +51,7 @@ export function ChatInput({ onSend }: Props) {
 
   async function toggleRecording() {
     if (recording) {
+      setRecording(false); // immediate visual feedback
       mediaRecorderRef.current?.stop();
       return;
     }
@@ -65,19 +67,22 @@ export function ChatInput({ onSend }: Props) {
     mr.ondataavailable = (e) => {
       if (e.data.size > 0) audioChunksRef.current.push(e.data);
     };
-    mr.onstop = () => {
+    mr.onstop = async () => {
       stream.getTracks().forEach((t) => t.stop());
+      setSendingAudio(true);
       const mimeType = mr.mimeType.split(";")[0] || "audio/webm";
       const blob = new Blob(audioChunksRef.current, { type: mimeType });
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataURL = reader.result as string;
-        const b64 = dataURL.slice(dataURL.indexOf(",") + 1);
-        onSend({ text: value.trim(), audioData: b64, audioMediaType: mimeType });
-        setValue("");
-      };
-      reader.readAsDataURL(blob);
-      setRecording(false);
+      const ab = await blob.arrayBuffer();
+      const bytes = new Uint8Array(ab);
+      let binary = "";
+      const chunk = 8192;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+      }
+      const b64 = btoa(binary);
+      onSend({ text: value.trim(), audioData: b64, audioMediaType: mimeType });
+      setValue("");
+      setSendingAudio(false);
     };
     mr.start();
     mediaRecorderRef.current = mr;
@@ -119,9 +124,10 @@ export function ChatInput({ onSend }: Props) {
         <button
           className={`attach-btn mic-btn${recording ? " mic-btn--recording" : ""}`}
           onClick={toggleRecording}
-          title={recording ? "Stop recording" : "Record voice message"}
+          disabled={sendingAudio}
+          title={recording ? "Stop recording" : sendingAudio ? "Sending…" : "Record voice message"}
         >
-          {recording ? "⏹" : "🎙"}
+          {recording ? "⏹" : sendingAudio ? "⏳" : "🎙"}
         </button>
         <input
           ref={fileRef}

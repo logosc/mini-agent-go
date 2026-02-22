@@ -19,7 +19,7 @@ export function reducer(state: AppState, action: Action): AppState {
       };
 
     case "chat": {
-      const { role, text, image_data, image_media_type } = action.payload;
+      const { role, text, image_data, image_media_type, audio_data, audio_media_type, file_data, file_mime, file_name } = action.payload;
       // If assistant message arrives after streaming, finalize the stream bubble
       if (role === "assistant" && state.streamBuffer !== "") {
         return {
@@ -35,7 +35,9 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         messages: [
           ...state.messages,
-          { role, text, imageData: image_data, imageMediaType: image_media_type },
+          { role, text, imageData: image_data, imageMediaType: image_media_type,
+            audioData: audio_data, audioMediaType: audio_media_type,
+            fileData: file_data, fileMime: file_mime, fileName: file_name },
         ],
       };
     }

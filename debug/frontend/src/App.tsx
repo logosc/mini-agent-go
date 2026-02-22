@@ -91,6 +91,13 @@ export function App() {
     [state.running, pendingUserId, pendingModel, pendingApiKey, pendingBaseUrl]
   );
 
+  // Update browser tab title when config title is set.
+  useEffect(() => {
+    if (state.config?.title) {
+      document.title = state.config.title;
+    }
+  }, [state.config?.title]);
+
   return (
     <div className="layout">
       <ChatPanel
@@ -110,6 +117,7 @@ export function App() {
         onRememberApiKeyChange={setRememberKey}
         pendingBaseUrl={pendingBaseUrl}
         onBaseUrlChange={setBaseUrl}
+        title={state.config?.title}
       />
       <DebugPanel state={state} />
     </div>

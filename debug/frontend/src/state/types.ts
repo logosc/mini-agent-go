@@ -6,6 +6,7 @@ export interface ToolDef {
 }
 
 export interface ConfigPayload {
+  title?: string;
   system_prompt: string;
   tools: ToolDef[];
   max_iterations: number;
@@ -20,6 +21,11 @@ export interface ChatPayload {
   text: string;
   image_data?: string;        // base64
   image_media_type?: string;  // e.g. "image/png"
+  audio_data?: string;        // base64
+  audio_media_type?: string;  // e.g. "audio/webm"
+  file_data?: string;         // base64 (audio/video file attachments)
+  file_mime?: string;         // e.g. "audio/mpeg", "video/mp4"
+  file_name?: string;         // e.g. "podcast.mp3"
 }
 
 export interface StreamPayload {
@@ -73,6 +79,11 @@ export interface ChatMessage {
   text: string;
   imageData?: string;       // base64 data URL src
   imageMediaType?: string;
+  audioData?: string;       // base64 raw audio
+  audioMediaType?: string;
+  fileData?: string;        // base64 audio/video file
+  fileMime?: string;        // e.g. "audio/mpeg", "video/mp4"
+  fileName?: string;        // e.g. "podcast.mp3"
 }
 
 export interface AppState {
