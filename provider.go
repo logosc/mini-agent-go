@@ -7,11 +7,13 @@ import (
 
 // Message represents a single message in the agent conversation.
 type Message struct {
-	Role       string          `json:"role"`                   // "system", "user", "assistant", "tool"
-	Content    string          `json:"content"`
-	ImageData  []byte          `json:"-"`                      // Optional inline image for user messages.
-	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"` // set when Role="tool"
+	Role           string          `json:"role"`                   // "system", "user", "assistant", "tool"
+	Content        string          `json:"content"`
+	ImageData      []byte          `json:"-"`                      // Optional inline image for user messages.
+	AudioData      []byte          `json:"-"`                      // Optional inline audio for user messages.
+	AudioMediaType string          `json:"-"`                      // MIME type for AudioData.
+	ToolCalls      []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID     string          `json:"tool_call_id,omitempty"` // set when Role="tool"
 }
 
 // ToolCall represents a tool invocation requested by the LLM.

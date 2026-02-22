@@ -11,14 +11,18 @@ import (
 
 // Reply holds the user's response.
 type Reply struct {
-	Text      string
-	ImageData []byte // Optional image data.
+	Text           string
+	ImageData      []byte // Optional image data.
+	AudioData      []byte // Optional raw audio bytes.
+	AudioMediaType string // MIME type, e.g. "audio/wav", "audio/ogg".
 }
 
 // BufferedMessage holds a message that arrived while the agent was busy.
 type BufferedMessage struct {
-	Text      string
-	ImageData []byte
+	Text           string
+	ImageData      []byte
+	AudioData      []byte
+	AudioMediaType string
 }
 
 // ChatInterface bridges the agent with a user for interactive mode.
@@ -122,6 +126,14 @@ func (c *ChannelChat) BufferMessageWithImage(text string, imageData []byte) {
 	c.messages = append(c.messages, BufferedMessage{Text: text, ImageData: imageData})
 	c.mu.Unlock()
 	log.Printf("[agent-chat] buffered message with image (%d bytes), total buffered: %d", len(imageData), len(c.messages))
+}
+
+// BufferMessageWithAudio stores a message with audio. Thread-safe.
+func (c *ChannelChat) BufferMessageWithAudio(text string, audioData []byte, audioMediaType string) {
+	c.mu.Lock()
+	c.messages = append(c.messages, BufferedMessage{Text: text, AudioData: audioData, AudioMediaType: audioMediaType})
+	c.mu.Unlock()
+	log.Printf("[agent-chat] buffered message with audio (%d bytes, mime=%s), total buffered: %d", len(audioData), audioMediaType, len(c.messages))
 }
 
 // DrainMessages returns and clears all buffered messages. Thread-safe.

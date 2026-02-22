@@ -131,6 +131,24 @@ func TestWaitForReplyAggregation(t *testing.T) {
 	}
 }
 
+func TestChannelChatBufferMessageWithAudio(t *testing.T) {
+	chat := &ChannelChat{ReplyCh: make(chan Reply)}
+
+	audio := []byte{0x52, 0x49, 0x46, 0x46} // "RIFF" WAV header
+	chat.BufferMessageWithAudio("", audio, "audio/wav")
+
+	msgs := chat.DrainMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("DrainMessages() returned %d, want 1", len(msgs))
+	}
+	if string(msgs[0].AudioData) != string(audio) {
+		t.Errorf("AudioData mismatch")
+	}
+	if msgs[0].AudioMediaType != "audio/wav" {
+		t.Errorf("AudioMediaType = %q, want %q", msgs[0].AudioMediaType, "audio/wav")
+	}
+}
+
 func TestWaitForReplyNoWindow(t *testing.T) {
 	ch := make(chan Reply, 5)
 	chat := &ChannelChat{
