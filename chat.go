@@ -51,7 +51,7 @@ type ChannelChat struct {
 
 	// ReplyAggregateWindow, if > 0, causes WaitForReply to wait this long
 	// after each incoming message for additional messages before returning.
-	// Multiple texts are joined with "\n"; last image wins. Default: 0 (off).
+	// Multiple texts are joined with "\n"; last image wins; last audio wins. Default: 0 (off).
 	ReplyAggregateWindow time.Duration
 
 	mu       sync.Mutex
@@ -89,6 +89,8 @@ func (c *ChannelChat) WaitForReply(ctx context.Context) (Reply, error) {
 	// Aggregate additional messages within the window.
 	texts := []string{first.Text}
 	imageData := first.ImageData
+	audioData := first.AudioData
+	audioMediaType := first.AudioMediaType
 	timer := time.NewTimer(window)
 	defer timer.Stop()
 	for {
@@ -98,13 +100,17 @@ func (c *ChannelChat) WaitForReply(ctx context.Context) (Reply, error) {
 			if len(msg.ImageData) > 0 {
 				imageData = msg.ImageData // last image wins
 			}
+			if len(msg.AudioData) > 0 {
+				audioData = msg.AudioData           // last audio wins
+				audioMediaType = msg.AudioMediaType
+			}
 			timer.Reset(window)
 		case <-timer.C:
 			combined := strings.Join(texts, "\n")
 			if len(texts) > 1 {
 				log.Printf("[agent-chat] aggregated %d replies within %v window", len(texts), window)
 			}
-			return Reply{Text: combined, ImageData: imageData}, nil
+			return Reply{Text: combined, ImageData: imageData, AudioData: audioData, AudioMediaType: audioMediaType}, nil
 		case <-ctx.Done():
 			return Reply{}, ctx.Err()
 		}
