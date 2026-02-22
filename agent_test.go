@@ -574,6 +574,58 @@ func TestEngineAudioOnlyPlaceholder(t *testing.T) {
 	}
 }
 
+// TestEngineBufferedAudioPlaceholder verifies that an audio-only message
+// buffered while a tool was running gets a placeholder rather than empty content.
+func TestEngineBufferedAudioPlaceholder(t *testing.T) {
+	var lastMessages []Message
+	llm := &mockLLM{
+		responses: []Response{
+			{ToolCalls: []ToolCall{{ID: "tc1", Name: "slow_tool", Args: json.RawMessage(`{}`)}}},
+		},
+		onChat: func(msgs []Message) {
+			cp := make([]Message, len(msgs))
+			copy(cp, msgs)
+			lastMessages = cp
+		},
+	}
+
+	chat := &ChannelChat{
+		SendFunc: func(ctx context.Context, text string) error { return nil },
+		ReplyCh:  make(chan Reply, 1),
+	}
+	// Buffer an audio-only message (no caption) while the tool runs.
+	chat.BufferMessageWithAudio("", []byte{0x52, 0x49, 0x46, 0x46}, "audio/wav")
+
+	tool := &mockTool{name: "slow_tool", result: &ToolResult{Summary: "ok"}}
+	engine := &Engine[*testState]{
+		LLM:           llm,
+		Tools:         []Tool[*testState]{tool},
+		Chat:          chat,
+		SystemPrompt:  "test",
+		MaxIterations: 10,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = engine.Run(ctx, &testState{}, "test")
+
+	// The buffered audio-only message must appear with a non-empty placeholder
+	// and have AudioData propagated.
+	var found Message
+	for _, msg := range lastMessages {
+		if msg.Role == "user" && msg.Content == "[Voice message received]" {
+			found = msg
+			break
+		}
+	}
+	if found.Content == "" {
+		t.Error("buffered audio-only message did not produce a [Voice message received] placeholder")
+	}
+	if string(found.AudioData) != string([]byte{0x52, 0x49, 0x46, 0x46}) {
+		t.Error("AudioData not propagated into buffered Message")
+	}
+}
+
 // mockToolWithParams wraps mockTool to return custom Parameters.
 type mockToolWithParams struct {
 	*mockTool
