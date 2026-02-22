@@ -387,6 +387,142 @@ func TestEngineLazyToolPromotion(t *testing.T) {
 	}
 }
 
+// TestEngineImageOnlyPlaceholder verifies that an image sent without a caption
+// still produces a non-empty placeholder in the conversation history.
+// Previously, image-only messages collapsed to empty Content and were lost.
+func TestEngineImageOnlyPlaceholder(t *testing.T) {
+	var capturedUserMsg Message
+	llm := &mockLLM{
+		responses: []Response{
+			{Content: "Let me help!"},
+		},
+		onChat: func(msgs []Message) {
+			for _, m := range msgs {
+				if m.Role == "user" && len(m.ImageData) > 0 {
+					capturedUserMsg = m
+				}
+			}
+		},
+	}
+
+	chat := &ChannelChat{
+		SendFunc: func(ctx context.Context, text string) error { return nil },
+		ReplyCh:  make(chan Reply, 1),
+	}
+	// Send an image with no caption.
+	chat.ReplyCh <- Reply{ImageData: []byte{0x89, 0x50, 0x4e, 0x47}} // PNG magic bytes
+
+	engine := &Engine[*testState]{
+		LLM:             llm,
+		Chat:            chat,
+		SystemPrompt:    "test",
+		MaxIterations:   5,
+		IdleTurnsToExit: 2, // allow one WaitForReply before exiting
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = engine.Run(ctx, &testState{}, "hello")
+
+	if capturedUserMsg.Content == "" {
+		t.Fatal("image-only message produced empty Content — would be lost in compaction")
+	}
+	if capturedUserMsg.Content != "[Photo received]" {
+		t.Errorf("got Content %q, want %q", capturedUserMsg.Content, "[Photo received]")
+	}
+}
+
+// TestEngineImageWithCaptionPlaceholder verifies that an image sent with a
+// caption produces the full "[Photo received with caption: ...]" placeholder.
+func TestEngineImageWithCaptionPlaceholder(t *testing.T) {
+	var capturedUserMsg Message
+	llm := &mockLLM{
+		responses: []Response{
+			{Content: "Got it!"},
+		},
+		onChat: func(msgs []Message) {
+			for _, m := range msgs {
+				if m.Role == "user" && len(m.ImageData) > 0 {
+					capturedUserMsg = m
+				}
+			}
+		},
+	}
+
+	chat := &ChannelChat{
+		SendFunc: func(ctx context.Context, text string) error { return nil },
+		ReplyCh:  make(chan Reply, 1),
+	}
+	chat.ReplyCh <- Reply{
+		Text:      "a sunset",
+		ImageData: []byte{0x89, 0x50, 0x4e, 0x47},
+	}
+
+	engine := &Engine[*testState]{
+		LLM:             llm,
+		Chat:            chat,
+		SystemPrompt:    "test",
+		MaxIterations:   5,
+		IdleTurnsToExit: 2, // allow one WaitForReply before exiting
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = engine.Run(ctx, &testState{}, "hello")
+
+	want := `[Photo received with caption: "a sunset"]`
+	if capturedUserMsg.Content != want {
+		t.Errorf("got Content %q, want %q", capturedUserMsg.Content, want)
+	}
+}
+
+// TestEngineBufferedImagePlaceholder verifies that an image-only message
+// buffered while a tool was running gets a placeholder rather than empty content.
+func TestEngineBufferedImagePlaceholder(t *testing.T) {
+	var lastMessages []Message
+	llm := &mockLLM{
+		responses: []Response{
+			{ToolCalls: []ToolCall{{ID: "tc1", Name: "slow_tool", Args: json.RawMessage(`{}`)}}},
+		},
+		onChat: func(msgs []Message) {
+			cp := make([]Message, len(msgs))
+			copy(cp, msgs)
+			lastMessages = cp
+		},
+	}
+
+	chat := &ChannelChat{
+		SendFunc: func(ctx context.Context, text string) error { return nil },
+		ReplyCh:  make(chan Reply, 1),
+	}
+	// Buffer an image-only message (no caption) while the tool runs.
+	chat.BufferMessageWithImage("", []byte{0x89, 0x50, 0x4e, 0x47})
+
+	tool := &mockTool{name: "slow_tool", result: &ToolResult{Summary: "ok"}}
+	engine := &Engine[*testState]{
+		LLM:           llm,
+		Tools:         []Tool[*testState]{tool},
+		Chat:          chat,
+		SystemPrompt:  "test",
+		MaxIterations: 10,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = engine.Run(ctx, &testState{}, "test")
+
+	// The buffered image-only message must appear with a non-empty placeholder.
+	foundPlaceholder := false
+	for _, msg := range lastMessages {
+		if msg.Role == "user" && msg.Content == "[Photo received]" {
+			foundPlaceholder = true
+		}
+	}
+	if !foundPlaceholder {
+		t.Error("buffered image-only message did not produce a [Photo received] placeholder")
+	}
+}
+
 // mockToolWithParams wraps mockTool to return custom Parameters.
 type mockToolWithParams struct {
 	*mockTool

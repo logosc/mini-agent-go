@@ -142,8 +142,12 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 			idleTurns = 0
 
 			userContent := reply.Text
-			if len(reply.ImageData) > 0 && reply.Text != "" {
-				userContent = fmt.Sprintf("[Photo received with caption: %q]", reply.Text)
+			if len(reply.ImageData) > 0 {
+				if reply.Text != "" {
+					userContent = fmt.Sprintf("[Photo received with caption: %q]", reply.Text)
+				} else {
+					userContent = "[Photo received]"
+				}
 			}
 			messages = append(messages,
 				Message{Role: "assistant", Content: resp.Content},
@@ -213,15 +217,29 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 			if len(buffered) > 0 {
 				var parts []string
 				for _, msg := range buffered {
-					parts = append(parts, msg.Text)
+					text := msg.Text
+					if len(msg.ImageData) > 0 && text == "" {
+						text = "[Photo received]"
+					}
+					if text != "" {
+						parts = append(parts, text)
+					}
 				}
 				status := fmt.Sprintf("[System: while %s was running (%s), the user sent additional input: %q — treat as extra context/preferences, NOT as a reply or confirmation.]",
 					tc.Name, elapsed.Round(time.Second), strings.Join(parts, "; "))
 				messages = append(messages, Message{Role: "user", Content: status})
 				for _, msg := range buffered {
+					content := msg.Text
+					if len(msg.ImageData) > 0 {
+						if msg.Text != "" {
+							content = fmt.Sprintf("[Photo received with caption: %q]", msg.Text)
+						} else {
+							content = "[Photo received]"
+						}
+					}
 					messages = append(messages, Message{
 						Role:      "user",
-						Content:   msg.Text,
+						Content:   content,
 						ImageData: msg.ImageData,
 					})
 				}
