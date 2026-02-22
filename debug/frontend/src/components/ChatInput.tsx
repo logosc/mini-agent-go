@@ -10,9 +10,10 @@ export interface SendPayload {
 
 interface Props {
   onSend: (payload: SendPayload) => void;
+  showMic?: boolean;
 }
 
-export function ChatInput({ onSend }: Props) {
+export function ChatInput({ onSend, showMic = false }: Props) {
   const [value, setValue] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
   const [imageData, setImageData] = useState<string | null>(null);
@@ -121,14 +122,16 @@ export function ChatInput({ onSend }: Props) {
         >
           📎
         </button>
-        <button
-          className={`attach-btn mic-btn${recording ? " mic-btn--recording" : ""}`}
-          onClick={toggleRecording}
-          disabled={sendingAudio}
-          title={recording ? "Stop recording" : sendingAudio ? "Sending…" : "Record voice message"}
-        >
-          {recording ? "⏹" : sendingAudio ? "⏳" : "🎙"}
-        </button>
+        {showMic && (
+          <button
+            className={`attach-btn mic-btn${recording ? " mic-btn--recording" : ""}`}
+            onClick={toggleRecording}
+            disabled={sendingAudio}
+            title={recording ? "Stop recording" : sendingAudio ? "Sending…" : "Record voice message"}
+          >
+            {recording ? "⏹" : sendingAudio ? "⏳" : "🎙"}
+          </button>
+        )}
         <input
           ref={fileRef}
           type="file"
