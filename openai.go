@@ -184,7 +184,10 @@ type openaiStreamTCFunc struct {
 // ---------- Chat implementation ----------
 
 func (p *OpenAICompatibleProvider) Chat(ctx context.Context, messages []Message, tools []ToolDef) (*Response, error) {
-	req := p.buildRequest(messages, tools, false)
+	req, err := p.buildRequest(messages, tools, false)
+	if err != nil {
+		return nil, err
+	}
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -241,7 +244,10 @@ func (p *OpenAICompatibleProvider) Chat(ctx context.Context, messages []Message,
 }
 
 func (p *OpenAICompatibleProvider) StreamChat(ctx context.Context, messages []Message, tools []ToolDef, onText func(chunk string)) (*Response, error) {
-	req := p.buildRequest(messages, tools, true)
+	req, err := p.buildRequest(messages, tools, true)
+	if err != nil {
+		return nil, err
+	}
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -419,7 +425,7 @@ func (p *OpenAICompatibleProvider) setHeaders(req *http.Request) {
 	}
 }
 
-func (p *OpenAICompatibleProvider) buildRequest(messages []Message, tools []ToolDef, stream bool) *openaiRequest {
+func (p *OpenAICompatibleProvider) buildRequest(messages []Message, tools []ToolDef, stream bool) (*openaiRequest, error) {
 	req := &openaiRequest{
 		Model:  p.model,
 		Stream: stream,
@@ -437,6 +443,9 @@ func (p *OpenAICompatibleProvider) buildRequest(messages []Message, tools []Tool
 			})
 
 		case "user":
+			if len(msg.AudioData) > 0 {
+				return nil, fmt.Errorf("openai: audio input is not supported; use a Gemini provider for voice messages")
+			}
 			req.Messages = append(req.Messages, p.userMessage(msg))
 
 		case "assistant":
@@ -478,7 +487,7 @@ func (p *OpenAICompatibleProvider) buildRequest(messages []Message, tools []Tool
 		}
 	}
 
-	return req
+	return req, nil
 }
 
 func (p *OpenAICompatibleProvider) userMessage(msg Message) openaiMessage {

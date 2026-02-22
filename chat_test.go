@@ -131,6 +131,52 @@ func TestWaitForReplyAggregation(t *testing.T) {
 	}
 }
 
+func TestChannelChatBufferMessageWithAudio(t *testing.T) {
+	chat := &ChannelChat{ReplyCh: make(chan Reply)}
+
+	audio := []byte{0x52, 0x49, 0x46, 0x46} // "RIFF" WAV header
+	chat.BufferMessageWithAudio("", audio, "audio/wav")
+
+	msgs := chat.DrainMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("DrainMessages() returned %d, want 1", len(msgs))
+	}
+	if string(msgs[0].AudioData) != string(audio) {
+		t.Errorf("AudioData mismatch")
+	}
+	if msgs[0].AudioMediaType != "audio/wav" {
+		t.Errorf("AudioMediaType = %q, want %q", msgs[0].AudioMediaType, "audio/wav")
+	}
+}
+
+func TestWaitForReplyAggregationWithAudio(t *testing.T) {
+	ch := make(chan Reply, 5)
+	chat := &ChannelChat{
+		ReplyCh:              ch,
+		ReplyAggregateWindow: 2 * time.Second,
+	}
+
+	audio1 := []byte{0x01}
+	audio2 := []byte{0x02}
+	ch <- Reply{Text: "hello", AudioData: audio1, AudioMediaType: "audio/wav"}
+	ch <- Reply{Text: "world", AudioData: audio2, AudioMediaType: "audio/ogg"}
+
+	reply, err := chat.WaitForReply(context.Background())
+	if err != nil {
+		t.Fatalf("WaitForReply: %v", err)
+	}
+	if reply.Text != "hello\nworld" {
+		t.Errorf("reply.Text = %q, want %q", reply.Text, "hello\nworld")
+	}
+	// last audio wins
+	if string(reply.AudioData) != string(audio2) {
+		t.Errorf("AudioData = %v, want %v (last wins)", reply.AudioData, audio2)
+	}
+	if reply.AudioMediaType != "audio/ogg" {
+		t.Errorf("AudioMediaType = %q, want %q", reply.AudioMediaType, "audio/ogg")
+	}
+}
+
 func TestWaitForReplyNoWindow(t *testing.T) {
 	ch := make(chan Reply, 5)
 	chat := &ChannelChat{

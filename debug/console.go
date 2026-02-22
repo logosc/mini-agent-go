@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,6 +49,10 @@ type Console[S any] struct {
 	// currentUser is the user ID used for the current/last session.
 	currentUser string
 
+	// Title is the display name shown in the browser header.
+	// If empty, defaults to "Agent Debug Console".
+	Title string
+
 	// defaultModel is the model shown in the browser on first load.
 	defaultModel string
 	// currentModel is the model used for the current/last session.
@@ -55,6 +60,17 @@ type Console[S any] struct {
 
 	// OnImage, if set, is called whenever the user sends an image.
 	OnImage func(state S, imageData []byte, caption string)
+
+	// OnAudio, if set, is called whenever the user sends an audio message.
+	// audio is the raw bytes; mimeType is e.g. "audio/wav"; caption is any
+	// accompanying text.
+	OnAudio func(state S, audio []byte, mimeType, caption string)
+
+	// TranscribeFunc, if set, is called instead of routing audio directly
+	// through ReplyCh. The returned text is sent as a normal text Reply.
+	// Use this to add STT (speech-to-text) before the agent sees the message.
+	// If nil, audio is routed as Reply.AudioData (Path B — native Gemini).
+	TranscribeFunc func(ctx context.Context, audio []byte, mimeType string) (string, error)
 
 	// ReplyAggregateWindow, if > 0, causes WaitForReply to coalesce
 	// multiple rapid user messages within this duration into a single reply.
@@ -146,6 +162,15 @@ func (c *Console[S]) instrument(engine *agent.Engine[S]) {
 			if att.Type == "image" && len(att.Data) > 0 {
 				ev["image_data"] = base64.StdEncoding.EncodeToString(att.Data)
 				ev["image_media_type"] = imageMIME(att.Data, att.Name)
+			} else if att.Type == "file" && len(att.Data) > 0 {
+				mime := fileMIME(att.Data, att.Name)
+				if strings.HasPrefix(mime, "audio/") || strings.HasPrefix(mime, "video/") {
+					ev["file_data"] = base64.StdEncoding.EncodeToString(att.Data)
+					ev["file_mime"] = mime
+					ev["file_name"] = att.Name
+				} else {
+					ev["text"] = fmt.Sprintf("[attachment: %s]", att.Name)
+				}
 			} else {
 				ev["text"] = fmt.Sprintf("[attachment: %s]", att.Name)
 			}
@@ -295,6 +320,7 @@ func (c *Console[S]) emitConfig() {
 		})
 	}
 	c.emit("config", map[string]any{
+		"title":          c.Title,
 		"system_prompt":  c.engine.SystemPrompt,
 		"tools":          tools,
 		"max_iterations": c.engine.MaxIterations,
@@ -340,6 +366,8 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 		Text           string `json:"text"`
 		ImageData      string `json:"image_data"`       // base64-encoded
 		ImageMediaType string `json:"image_media_type"` // e.g. "image/png"
+		AudioData      string `json:"audio_data"`       // base64-encoded
+		AudioMediaType string `json:"audio_media_type"` // e.g. "audio/wav"
 		UserID         string `json:"user_id"`          // override user for new sessions
 		Model          string `json:"model"`            // override model for new sessions
 		APIKey         string `json:"api_key"`          // API key for new sessions
@@ -359,6 +387,17 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("[debug] received image (%d bytes, mime=%s) with text=%q", len(imageBytes), body.ImageMediaType, body.Text)
+	}
+
+	var audioBytes []byte
+	if body.AudioData != "" {
+		var err error
+		audioBytes, err = base64.StdEncoding.DecodeString(body.AudioData)
+		if err != nil {
+			http.Error(w, "invalid audio_data base64", 400)
+			return
+		}
+		log.Printf("[debug] received audio (%d bytes, mime=%s) with text=%q", len(audioBytes), body.AudioMediaType, body.Text)
 	}
 
 	c.mu.Lock()
@@ -414,6 +453,9 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 	if len(imageBytes) > 0 && c.OnImage != nil && c.engine != nil {
 		c.OnImage(c.state, imageBytes, body.Text)
 	}
+	if len(audioBytes) > 0 && c.OnAudio != nil && c.engine != nil {
+		c.OnAudio(c.state, audioBytes, body.AudioMediaType, body.Text)
+	}
 	c.mu.Unlock()
 
 	// Always echo the user message as a chat event so it is stored in the
@@ -423,14 +465,29 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 		userEv["image_data"] = base64.StdEncoding.EncodeToString(imageBytes)
 		userEv["image_media_type"] = imageMIME(imageBytes, "")
 	}
+	if len(audioBytes) > 0 {
+		userEv["audio_data"] = base64.StdEncoding.EncodeToString(audioBytes)
+		userEv["audio_media_type"] = body.AudioMediaType
+	}
 
 	if stopped {
 		c.broadcaster.clear()
 		c.emitConfig()
 		c.emit("chat", userEv)
 		c.emit("state", map[string]any{"running": true})
+
 		go func() {
-			err := c.engine.Run(context.Background(), c.state, body.Text)
+			var err error
+			if len(audioBytes) > 0 {
+				// Include audio in the very first LLM call, not via pre-queue.
+				err = c.engine.RunWithReply(context.Background(), c.state, agent.Reply{
+					Text:           body.Text,
+					AudioData:      audioBytes,
+					AudioMediaType: body.AudioMediaType,
+				})
+			} else {
+				err = c.engine.Run(context.Background(), c.state, body.Text)
+			}
 			c.mu.Lock()
 			c.running = false
 			c.mu.Unlock()
@@ -441,18 +498,87 @@ func (c *Console[S]) handleSend(w http.ResponseWriter, r *http.Request) {
 		}()
 	} else {
 		c.emit("chat", userEv)
-		// Image data is handled by OnImage above; only text goes through
-		// the reply channel so photos have a single ingestion path.
-		reply := agent.Reply{Text: body.Text}
-		select {
-		case c.chat.ReplyCh <- reply:
-		default:
-			c.chat.BufferMessage(body.Text)
+		if len(audioBytes) > 0 {
+			if c.TranscribeFunc != nil {
+				text, err := c.TranscribeFunc(r.Context(), audioBytes, body.AudioMediaType)
+				if err != nil {
+					log.Printf("[debug] TranscribeFunc error: %v", err)
+					text = body.Text // fallback to caption
+				}
+				reply := agent.Reply{Text: text}
+				select {
+				case c.chat.ReplyCh <- reply:
+				default:
+					c.chat.BufferMessage(text)
+				}
+			} else {
+				// Path B: native audio — route bytes directly.
+				reply := agent.Reply{Text: body.Text, AudioData: audioBytes, AudioMediaType: body.AudioMediaType}
+				select {
+				case c.chat.ReplyCh <- reply:
+				default:
+					c.chat.BufferMessageWithAudio(body.Text, audioBytes, body.AudioMediaType)
+				}
+			}
+		} else {
+			reply := agent.Reply{Text: body.Text}
+			select {
+			case c.chat.ReplyCh <- reply:
+			default:
+				c.chat.BufferMessage(body.Text)
+			}
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "sent"})
+}
+
+// fileMIME detects the MIME type of audio/video files from magic bytes or filename.
+func fileMIME(data []byte, name string) string {
+	// MP3: ID3 tag or MPEG sync word
+	if len(data) >= 3 && string(data[:3]) == "ID3" {
+		return "audio/mpeg"
+	}
+	if len(data) >= 2 && data[0] == 0xFF && (data[1]&0xE0) == 0xE0 {
+		return "audio/mpeg"
+	}
+	// OGG
+	if len(data) >= 4 && string(data[:4]) == "OggS" {
+		return "audio/ogg"
+	}
+	// WAV (RIFF....WAVE)
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WAVE" {
+		return "audio/wav"
+	}
+	// MP4/M4A/MOV (ftyp box)
+	if len(data) >= 8 && string(data[4:8]) == "ftyp" {
+		return "video/mp4"
+	}
+	// WebM (EBML header — Matroska/WebM)
+	if len(data) >= 4 && data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3 {
+		return "video/webm"
+	}
+	// Fall back to extension
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		switch strings.ToLower(name[i+1:]) {
+		case "mp3":
+			return "audio/mpeg"
+		case "wav":
+			return "audio/wav"
+		case "ogg":
+			return "audio/ogg"
+		case "m4a", "aac":
+			return "audio/mp4"
+		case "mp4", "m4v":
+			return "video/mp4"
+		case "webm":
+			return "video/webm"
+		case "mov":
+			return "video/quicktime"
+		}
+	}
+	return "application/octet-stream"
 }
 
 // imageMIME detects the MIME type from magic bytes, falling back to the filename.

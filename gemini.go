@@ -361,7 +361,10 @@ func (p *GeminiProvider) buildRequest(messages []Message, tools []ToolDef) (*gem
 				Parts: []geminiPart{{Text: msg.Content}},
 			}
 		case "user":
-			parts := []geminiPart{{Text: msg.Content}}
+			var parts []geminiPart
+			if msg.Content != "" {
+				parts = append(parts, geminiPart{Text: msg.Content})
+			}
 			if len(msg.ImageData) > 0 {
 				mimeType := "image/jpeg"
 				if len(msg.ImageData) > 1 && msg.ImageData[0] == 0x89 && msg.ImageData[1] == 0x50 {
@@ -374,10 +377,24 @@ func (p *GeminiProvider) buildRequest(messages []Message, tools []ToolDef) (*gem
 					},
 				})
 			}
-			req.Contents = append(req.Contents, geminiContent{
-				Role:  "user",
-				Parts: parts,
-			})
+			if len(msg.AudioData) > 0 {
+				mimeType := msg.AudioMediaType
+				if mimeType == "" {
+					mimeType = "audio/wav"
+				}
+				parts = append(parts, geminiPart{
+					InlineData: &geminiInlineData{
+						MimeType: mimeType,
+						Data:     base64.StdEncoding.EncodeToString(msg.AudioData),
+					},
+				})
+			}
+			if len(parts) > 0 {
+				req.Contents = append(req.Contents, geminiContent{
+					Role:  "user",
+					Parts: parts,
+				})
+			}
 		case "assistant":
 			parts := p.assistantParts(msg)
 			req.Contents = append(req.Contents, geminiContent{

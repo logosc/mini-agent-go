@@ -431,6 +431,9 @@ func (p *AnthropicProvider) buildRequest(messages []Message, tools []ToolDef, st
 			}}
 
 		case "user":
+			if len(msg.AudioData) > 0 {
+				return nil, fmt.Errorf("anthropic: audio input is not supported; use a Gemini provider for voice messages")
+			}
 			var blocks []anthropicContentBlock
 			if msg.Content != "" {
 				blocks = append(blocks, anthropicContentBlock{

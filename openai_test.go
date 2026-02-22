@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -234,5 +235,19 @@ func TestOpenAIProviderImageMessage(t *testing.T) {
 	}
 	if got := parts[1].ImageURL.URL; len(got) < 20 || got[:15] != "data:image/jpeg" {
 		t.Errorf("image URL prefix = %q, want data:image/jpeg...", got[:min(30, len(got))])
+	}
+}
+
+func TestOpenAIProviderRejectsAudio(t *testing.T) {
+	p := NewOpenAICompatibleProvider(OpenAICompatibleOptions{APIKey: "test", Model: "gpt-4o"})
+	msgs := []Message{
+		{Role: "user", Content: "here", AudioData: []byte{0x00}, AudioMediaType: "audio/wav"},
+	}
+	_, err := p.Chat(context.Background(), msgs, nil)
+	if err == nil {
+		t.Fatal("expected error for audio input on OpenAI provider")
+	}
+	if !strings.Contains(err.Error(), "audio") {
+		t.Errorf("error %q should mention 'audio'", err)
 	}
 }

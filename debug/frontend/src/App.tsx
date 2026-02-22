@@ -65,7 +65,7 @@ export function App() {
   const setBaseUrl = useCallback((v: string) => { setPendingBaseUrl(v); saveSetting("base_url", v); }, []);
 
   const handleSend = useCallback(
-    async ({ text, imageData, imageMediaType }: SendPayload) => {
+    async ({ text, imageData, imageMediaType, audioData, audioMediaType }: SendPayload) => {
       // Only include credentials and session config when starting a new
       // session (agent not currently running). The backend ignores these
       // fields for follow-up messages anyway.
@@ -77,6 +77,8 @@ export function App() {
           text,
           image_data: imageData,
           image_media_type: imageMediaType,
+          audio_data: audioData,
+          audio_media_type: audioMediaType,
           ...(isNewSession && {
             user_id: pendingUserId || undefined,
             model: pendingModel || undefined,
@@ -88,6 +90,13 @@ export function App() {
     },
     [state.running, pendingUserId, pendingModel, pendingApiKey, pendingBaseUrl]
   );
+
+  // Update browser tab title when config title is set.
+  useEffect(() => {
+    if (state.config?.title) {
+      document.title = state.config.title;
+    }
+  }, [state.config?.title]);
 
   return (
     <div className="layout">
@@ -108,6 +117,7 @@ export function App() {
         onRememberApiKeyChange={setRememberKey}
         pendingBaseUrl={pendingBaseUrl}
         onBaseUrlChange={setBaseUrl}
+        title={state.config?.title}
       />
       <DebugPanel state={state} />
     </div>

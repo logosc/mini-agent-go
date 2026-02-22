@@ -30,6 +30,7 @@ interface Props {
   onRememberApiKeyChange: (remember: boolean) => void;
   pendingBaseUrl: string;
   onBaseUrlChange: (url: string) => void;
+  title?: string;
 }
 
 export function ChatPanel({
@@ -49,6 +50,7 @@ export function ChatPanel({
   onRememberApiKeyChange,
   pendingBaseUrl,
   onBaseUrlChange,
+  title,
 }: Props) {
   const chatRef = useRef<HTMLDivElement>(null);
 
@@ -74,6 +76,7 @@ export function ChatPanel({
     <div className="left">
       <div className="header">
         <div className={`dot${running ? " on" : ""}`} />
+        {title && <span className="header-title">{title}</span>}
         <span className="header-text">{statusText()}</span>
         <div className="header-user">
           <span className="header-user-label">user:</span>
