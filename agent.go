@@ -142,7 +142,13 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 			idleTurns = 0
 
 			userContent := reply.Text
-			if len(reply.ImageData) > 0 {
+			if len(reply.AudioData) > 0 {
+				if reply.Text != "" {
+					userContent = fmt.Sprintf("[Voice message received with caption: %q]", reply.Text)
+				} else {
+					userContent = "[Voice message received]"
+				}
+			} else if len(reply.ImageData) > 0 {
 				if reply.Text != "" {
 					userContent = fmt.Sprintf("[Photo received with caption: %q]", reply.Text)
 				} else {
@@ -151,7 +157,8 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 			}
 			messages = append(messages,
 				Message{Role: "assistant", Content: resp.Content},
-				Message{Role: "user", Content: userContent, ImageData: reply.ImageData},
+				Message{Role: "user", Content: userContent, ImageData: reply.ImageData,
+					AudioData: reply.AudioData, AudioMediaType: reply.AudioMediaType},
 			)
 			continue
 		}
@@ -218,7 +225,9 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 				var parts []string
 				for _, msg := range buffered {
 					text := msg.Text
-					if len(msg.ImageData) > 0 && text == "" {
+					if len(msg.AudioData) > 0 && text == "" {
+						text = "[Voice message received]"
+					} else if len(msg.ImageData) > 0 && text == "" {
 						text = "[Photo received]"
 					}
 					if text != "" {
@@ -230,7 +239,13 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 				messages = append(messages, Message{Role: "user", Content: status})
 				for _, msg := range buffered {
 					content := msg.Text
-					if len(msg.ImageData) > 0 {
+					if len(msg.AudioData) > 0 {
+						if msg.Text != "" {
+							content = fmt.Sprintf("[Voice message received with caption: %q]", msg.Text)
+						} else {
+							content = "[Voice message received]"
+						}
+					} else if len(msg.ImageData) > 0 {
 						if msg.Text != "" {
 							content = fmt.Sprintf("[Photo received with caption: %q]", msg.Text)
 						} else {
@@ -238,9 +253,11 @@ func (e *Engine[S]) Run(ctx context.Context, state S, taskPrompt string) error {
 						}
 					}
 					messages = append(messages, Message{
-						Role:      "user",
-						Content:   content,
-						ImageData: msg.ImageData,
+						Role:           "user",
+						Content:        content,
+						ImageData:      msg.ImageData,
+						AudioData:      msg.AudioData,
+						AudioMediaType: msg.AudioMediaType,
 					})
 				}
 			}

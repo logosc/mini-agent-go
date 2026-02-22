@@ -523,6 +523,54 @@ func TestEngineBufferedImagePlaceholder(t *testing.T) {
 	}
 }
 
+// TestEngineAudioOnlyPlaceholder verifies that an audio message sent without a
+// caption still produces a non-empty placeholder in the conversation history.
+func TestEngineAudioOnlyPlaceholder(t *testing.T) {
+	var history []Message
+	llm := &mockLLM{
+		responses: []Response{
+			{Content: "I'll wait for more input."},
+			{Content: "done"},
+		},
+		onChat: func(msgs []Message) {
+			for _, m := range msgs {
+				if m.Role == "user" && m.Content == "[Voice message received]" {
+					cp := make([]Message, len(history)+1)
+					copy(cp, history)
+					cp[len(history)] = m
+					history = cp
+				}
+			}
+		},
+	}
+	ch := make(chan Reply, 1)
+	chat := &ChannelChat{
+		SendFunc: func(ctx context.Context, text string) error { return nil },
+		ReplyCh:  ch,
+	}
+
+	e := &Engine[*testState]{
+		LLM:             llm,
+		Chat:            chat,
+		IdleTurnsToExit: 2,
+	}
+
+	audio := []byte{0x52, 0x49, 0x46, 0x46}
+	ch <- Reply{AudioData: audio, AudioMediaType: "audio/wav"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	state := &testState{}
+	_ = e.Run(ctx, state, "start")
+
+	if len(history) == 0 {
+		t.Fatal("expected a user message with '[Voice message received]' placeholder")
+	}
+	if string(history[0].AudioData) != string(audio) {
+		t.Error("AudioData not propagated into Message")
+	}
+}
+
 // mockToolWithParams wraps mockTool to return custom Parameters.
 type mockToolWithParams struct {
 	*mockTool
