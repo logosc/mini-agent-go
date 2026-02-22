@@ -569,6 +569,9 @@ func TestEngineAudioOnlyPlaceholder(t *testing.T) {
 	if string(history[0].AudioData) != string(audio) {
 		t.Error("AudioData not propagated into Message")
 	}
+	if history[0].AudioMediaType != "audio/wav" {
+		t.Errorf("AudioMediaType = %q, want %q", history[0].AudioMediaType, "audio/wav")
+	}
 }
 
 // mockToolWithParams wraps mockTool to return custom Parameters.
