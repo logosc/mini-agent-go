@@ -4,6 +4,8 @@ export interface SendPayload {
   text: string;
   imageData?: string;        // base64
   imageMediaType?: string;
+  audioData?: string;        // base64
+  audioMediaType?: string;
 }
 
 interface Props {
@@ -15,6 +17,9 @@ export function ChatInput({ onSend }: Props) {
   const [preview, setPreview] = useState<string | null>(null);
   const [imageData, setImageData] = useState<string | null>(null);
   const [imageMediaType, setImageMediaType] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   function handleFile(e: ChangeEvent<HTMLInputElement>) {
@@ -41,6 +46,42 @@ export function ChatInput({ onSend }: Props) {
     setPreview(null);
     setImageData(null);
     setImageMediaType(null);
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      alert("Microphone access denied.");
+      return;
+    }
+    const mr = new MediaRecorder(stream);
+    audioChunksRef.current = [];
+    mr.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data);
+    };
+    mr.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const mimeType = mr.mimeType.split(";")[0] || "audio/webm";
+      const blob = new Blob(audioChunksRef.current, { type: mimeType });
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataURL = reader.result as string;
+        const b64 = dataURL.slice(dataURL.indexOf(",") + 1);
+        onSend({ text: value.trim(), audioData: b64, audioMediaType: mimeType });
+        setValue("");
+      };
+      reader.readAsDataURL(blob);
+      setRecording(false);
+    };
+    mr.start();
+    mediaRecorderRef.current = mr;
+    setRecording(true);
   }
 
   function handleSend() {
@@ -74,6 +115,13 @@ export function ChatInput({ onSend }: Props) {
           title="Attach image"
         >
           📎
+        </button>
+        <button
+          className={`attach-btn mic-btn${recording ? " mic-btn--recording" : ""}`}
+          onClick={toggleRecording}
+          title={recording ? "Stop recording" : "Record voice message"}
+        >
+          {recording ? "⏹" : "🎙"}
         </button>
         <input
           ref={fileRef}

@@ -253,6 +253,16 @@ body {
   color: var(--accent);
 }
 
+.mic-btn--recording {
+  border-color: #e53;
+  color: #e53;
+  animation: pulse 1s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 /* Image preview above input */
 .input-area {
   flex-shrink: 0;
