@@ -320,9 +320,11 @@ body {
 .bubble-audio {
   display: block;
   width: 100%;
-  max-width: 280px;
+  max-width: 480px;
+  min-width: 300px;
   margin-bottom: 4px;
-  height: 36px;
+  height: 54px;
+  border-radius: 8px;
 }
 
 .bubble-file {
